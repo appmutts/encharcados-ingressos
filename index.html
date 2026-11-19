@@ -136,6 +136,7 @@ const CONFIG = {
   recebedor:  "JESSICA",              // nome do titular (até 25 letras)
   cidade:     "SOROCABA",             // cidade do titular (até 15 letras)
   whatsapp:   "5515997844648",        // WhatsApp da Jéssica: 55 + DDD + número
+  planilhaLeads: "https://script.google.com/macros/s/AKfycbyXGngDYqVYCIJlx33RgeZrvFq6PGa_3gMj8qMjcK9naIG4k66L4975Jl3FJBzbZ5kB/exec",
   minutos:    15                      // tempo de reserva para pagar
 };
 /* ===================================================== */
@@ -207,6 +208,16 @@ function liberar(){
 /* ---------- Métricas simples (só contagem, nenhum dado pessoal) ---------- */
 function conta(ev){ try { fetch(API+"/hit/"+CONFIG.chaveContador+"-m-"+ev+"?t="+Date.now(),{cache:"no-store",keepalive:true}); } catch(_){} }
 conta("visitas");
+
+/* ---------- Lead na planilha Google (uma linha por pessoa, etapa atualizada) ---------- */
+let leadId = null;
+try { leadId = sessionStorage.getItem("sabia-lead"); } catch(_){}
+function lead(etapa){
+  if(!leadId){ leadId = Date.now().toString(36) + Math.random().toString(36).slice(2,7); try { sessionStorage.setItem("sabia-lead", leadId); } catch(_){} }
+  const dados = new URLSearchParams({ id: leadId, etapa, nome: $("nome").value.trim(), tel: $("tel").value,
+    email: $("email").value.trim(), qtd: String(qtd), valor: brl(CONFIG.preco*qtd) });
+  try { fetch(CONFIG.planilhaLeads, { method:"POST", mode:"no-cors", body:dados, keepalive:true }); } catch(_){}
+}
 // Fechou a página antes de copiar o Pix → devolve a vaga
 let pixCopiado = false;
 window.addEventListener("pagehide", () => { if(!pixCopiado) liberar(); });
@@ -272,11 +283,12 @@ $("irPagar").onclick = async () => {
   catch(_) { fim(); alert("Não conseguimos reservar agora. Tente de novo em alguns segundos."); return; }
   fim();
   if(!reservou){
+    lead("Tentou comprar — esgotado");
     await atualizaEstoque();
     if(restantes > 0) alert("Alguém acabou de reservar. Só restam "+restantes+" ingresso(s) — ajuste a quantidade.");
     return;
   }
-  conta("reservas");
+  conta("reservas"); lead("1. Reservou (viu o Pix)");
   irParaPix();
 };
 $("voltar").onclick = () => {
@@ -291,7 +303,7 @@ $("copiar").onclick = async () => {
   const code = $("pixCode").textContent;
   try { await navigator.clipboard.writeText(code); }
   catch(_) { const t=document.createElement("textarea"); t.value=code; document.body.appendChild(t); t.select(); document.execCommand("copy"); t.remove(); }
-  if(!pixCopiado) conta("pix-copiado");
+  if(!pixCopiado){ conta("pix-copiado"); lead("2. Copiou o Pix"); }
   pixCopiado = true;
   $("copiado").textContent = "✓ Código copiado! Agora cole no app do banco.";
   $("copiar").textContent = "Copiar de novo";
@@ -308,7 +320,7 @@ function iniciaTimer(){
     $("tempo").textContent = String(Math.floor(s/60)).padStart(2,"0")+":"+String(s%60).padStart(2,"0");
     if(s===0 && !pago){
       clearInterval(timerId); timerId = null;
-      liberar();
+      liberar(); lead("Reserva expirou (não pagou em 15 min)");
       $("timer").classList.add("over");
       $("timerMsg").textContent = "Tempo esgotado — a reserva foi liberada.";
       $("pixCode").textContent = "Reserva expirada. Volte e faça uma nova reserva.";
@@ -325,7 +337,7 @@ $("jaPaguei").onclick = async () => {
     reserva = { n: qtd, fim: Date.now() };
     try { await api("/hit/"+K_RES+"?amount="+qtd); } catch(_){}
   }
-  if(!pago) conta("ja-paguei");
+  if(!pago){ conta("ja-paguei"); lead("3. Disse que pagou"); }
   pago = true; salva(); clearInterval(timerId);
   $("s2").classList.add("hidden"); $("s3").classList.remove("hidden");
   window.scrollTo({top:0,behavior:"smooth"});
@@ -358,7 +370,7 @@ $("whats").onclick = () => {
 *Valor pago:* ${brl(CONFIG.preco*qtd)}
 
 Segue o comprovante 👇`;
-  conta("whatsapp");
+  conta("whatsapp"); lead("4. Enviou comprovante no WhatsApp");
   salva();
   window.location.href = "https://wa.me/"+CONFIG.whatsapp+"?text="+encodeURIComponent(msg);
 };

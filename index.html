@@ -52,10 +52,15 @@
     <div class="logo">Sabiá Eventos</div>
     <h1 id="evento"></h1>
     <div class="sub" id="dataLocal"></div>
-    <div class="tag">Últimos ingressos · pagamento via Pix</div>
+    <div class="tag" id="tag">Último lote · pagamento via Pix</div>
   </header>
 
   <!-- PASSO 1 -->
+  <section class="card hidden" id="esgotado" style="text-align:center">
+    <div class="step" style="justify-content:center">Ingressos esgotados 😢</div>
+    <p class="sub" style="margin:0">O último lote acabou. Obrigado pelo interesse!</p>
+  </section>
+
   <section class="card" id="s1">
     <div class="step"><span class="num">1</span>Seus dados</div>
     <label for="nome">Nome completo</label>
@@ -123,8 +128,10 @@
 const CONFIG = {
   evento:     "Encharcados",
   dataLocal:  "Hoje · quinta, 19 de novembro",
-  preco:      130.00,                // valor de 1 ingresso
+  preco:      150.00,                 // valor de 1 ingresso (último lote)
   maxQtd:     10,                     // máximo por pessoa
+  totalIngressos: 10,                 // total à venda neste lote
+  contador:   "https://countapi.mileshilliard.com/api/v1/{acao}/sabia-encharcados-u7k2x9",
   pixChave:   "69cc9df8-10cd-408c-9115-171aa9a375fb", // chave aleatória da Jéssica
   recebedor:  "JESSICA",              // nome do titular (até 25 letras)
   cidade:     "SOROCABA",             // cidade do titular (até 15 letras)
@@ -145,8 +152,37 @@ function atualizaTotal(){
   $("total").textContent = $("total2").textContent = brl(CONFIG.preco*qtd);
 }
 $("menos").onclick = () => { if(qtd>1){qtd--;atualizaTotal();} };
-$("mais").onclick  = () => { if(qtd<CONFIG.maxQtd){qtd++;atualizaTotal();} };
+$("mais").onclick  = () => { if(qtd<Math.min(CONFIG.maxQtd,restantes)){qtd++;atualizaTotal();} };
 atualizaTotal();
+
+/* ---------- Estoque (contador online de vendidos) ---------- */
+let restantes = CONFIG.totalIngressos;
+const urlContador = acao => CONFIG.contador.replace("{acao}",acao);
+async function lerVendidos(){
+  try {
+    const r = await fetch(urlContador("get")+"?t="+Date.now(),{cache:"no-store"});
+    const j = await r.json();
+    return typeof j.value==="number" ? j.value : 0;   // chave nova = 0 vendidos
+  } catch(_) { return null; }                          // contador fora do ar: não trava a venda
+}
+async function atualizaEstoque(){
+  const v = await lerVendidos();
+  if(v===null) return true;
+  restantes = Math.max(0, CONFIG.totalIngressos - v);
+  if(restantes===0){
+    ["s1","s2"].forEach(id=>$(id).classList.add("hidden"));
+    $("esgotado").classList.remove("hidden");
+    $("tag").textContent = "Esgotado";
+    return false;
+  }
+  $("tag").textContent = "Último lote · restam " + restantes + (restantes===1?" ingresso":" ingressos");
+  if(qtd>restantes){ qtd=restantes; atualizaTotal(); }
+  return true;
+}
+atualizaEstoque();
+async function registrarVenda(n){
+  for(let i=0;i<n;i++){ try{ await fetch(urlContador("hit"),{cache:"no-store"}); }catch(_){} }
+}
 
 /* Máscara (00) 00000-0000 / (00) 0000-0000 */
 $("tel").addEventListener("input", e => {
@@ -187,8 +223,14 @@ function pixPayload(valor){
   return p + crc16(p);
 }
 
-$("irPagar").onclick = () => {
+$("irPagar").onclick = async () => {
   if(!valida()) return;
+  $("irPagar").disabled = true; $("irPagar").textContent = "Verificando ingressos…";
+  const pedido = qtd;
+  const ok = await atualizaEstoque();
+  $("irPagar").disabled = false; $("irPagar").textContent = "Ir para o pagamento";
+  if(!ok) return;
+  if(pedido>restantes){ alert("Só restam "+restantes+" ingresso(s). Ajustamos a quantidade."); return; }
   $("pixCode").textContent = pixPayload(CONFIG.preco*qtd);
   $("s1").classList.add("hidden"); $("s2").classList.remove("hidden");
   window.scrollTo({top:0,behavior:"smooth"});
@@ -216,7 +258,10 @@ function iniciaTimer(){
   tick(); timerId = setInterval(tick,1000);
 }
 
-$("jaPaguei").onclick = () => { $("s2").classList.add("hidden"); $("s3").classList.remove("hidden"); window.scrollTo({top:0,behavior:"smooth"}); };
+let vendaRegistrada = false;
+$("jaPaguei").onclick = async () => {
+  if(!vendaRegistrada){ vendaRegistrada = true; $("jaPaguei").disabled = true; await registrarVenda(qtd); }
+  $("s2").classList.add("hidden"); $("s3").classList.remove("hidden"); window.scrollTo({top:0,behavior:"smooth"}); };
 
 $("whats").onclick = () => {
   const msg =
@@ -230,7 +275,7 @@ $("whats").onclick = () => {
 *Valor pago:* ${brl(CONFIG.preco*qtd)}
 
 Segue o comprovante 👇`;
-  window.open("https://wa.me/"+CONFIG.whatsapp+"?text="+encodeURIComponent(msg), "_blank");
+  window.location.href = "https://wa.me/"+CONFIG.whatsapp+"?text="+encodeURIComponent(msg);
 };
 </script>
 </body>

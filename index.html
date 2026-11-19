@@ -98,7 +98,7 @@
 
     <div class="timer hidden" id="timer">
       <small>Pague em até</small>
-      <div class="t" id="tempo">10:00</div>
+      <div class="t" id="tempo">15:00</div>
       <small id="timerMsg">Seus ingressos ficam reservados nesse tempo</small>
     </div>
 
@@ -136,7 +136,7 @@ const CONFIG = {
   recebedor:  "JESSICA",              // nome do titular (até 25 letras)
   cidade:     "SOROCABA",             // cidade do titular (até 15 letras)
   whatsapp:   "5515997844648",        // WhatsApp da Jéssica: 55 + DDD + número
-  minutos:    10                      // tempo de reserva para pagar
+  minutos:    15                      // tempo de reserva para pagar
 };
 /* ===================================================== */
 
@@ -314,7 +314,11 @@ function iniciaTimer(){
   tick(); timerId = setInterval(tick,1000);
 }
 
-$("jaPaguei").onclick = () => {
+$("jaPaguei").onclick = async () => {
+  if(!reserva && !pago){   // pagou depois que a reserva expirou → conta a venda de novo
+    reserva = { n: qtd, fim: Date.now() };
+    try { await api("/hit/"+K_RES+"?amount="+qtd); } catch(_){}
+  }
   pago = true; salva(); clearInterval(timerId);
   $("s2").classList.add("hidden"); $("s3").classList.remove("hidden");
   window.scrollTo({top:0,behavior:"smooth"});

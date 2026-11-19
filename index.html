@@ -203,6 +203,10 @@ function liberar(){
   const n = reserva.n; reserva = null; salva();
   try { fetch(API+"/hit/"+K_LIB+"?amount="+n+"&t="+Date.now(), {keepalive:true, cache:"no-store"}); } catch(_){}
 }
+
+/* ---------- Métricas simples (só contagem, nenhum dado pessoal) ---------- */
+function conta(ev){ try { fetch(API+"/hit/"+CONFIG.chaveContador+"-m-"+ev+"?t="+Date.now(),{cache:"no-store",keepalive:true}); } catch(_){} }
+conta("visitas");
 // Fechou a página antes de copiar o Pix → devolve a vaga
 let pixCopiado = false;
 window.addEventListener("pagehide", () => { if(!pixCopiado) liberar(); });
@@ -272,6 +276,7 @@ $("irPagar").onclick = async () => {
     if(restantes > 0) alert("Alguém acabou de reservar. Só restam "+restantes+" ingresso(s) — ajuste a quantidade.");
     return;
   }
+  conta("reservas");
   irParaPix();
 };
 $("voltar").onclick = () => {
@@ -286,6 +291,7 @@ $("copiar").onclick = async () => {
   const code = $("pixCode").textContent;
   try { await navigator.clipboard.writeText(code); }
   catch(_) { const t=document.createElement("textarea"); t.value=code; document.body.appendChild(t); t.select(); document.execCommand("copy"); t.remove(); }
+  if(!pixCopiado) conta("pix-copiado");
   pixCopiado = true;
   $("copiado").textContent = "✓ Código copiado! Agora cole no app do banco.";
   $("copiar").textContent = "Copiar de novo";
@@ -319,6 +325,7 @@ $("jaPaguei").onclick = async () => {
     reserva = { n: qtd, fim: Date.now() };
     try { await api("/hit/"+K_RES+"?amount="+qtd); } catch(_){}
   }
+  if(!pago) conta("ja-paguei");
   pago = true; salva(); clearInterval(timerId);
   $("s2").classList.add("hidden"); $("s3").classList.remove("hidden");
   window.scrollTo({top:0,behavior:"smooth"});
@@ -351,6 +358,7 @@ $("whats").onclick = () => {
 *Valor pago:* ${brl(CONFIG.preco*qtd)}
 
 Segue o comprovante 👇`;
+  conta("whatsapp");
   salva();
   window.location.href = "https://wa.me/"+CONFIG.whatsapp+"?text="+encodeURIComponent(msg);
 };

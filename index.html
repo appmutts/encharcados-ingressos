@@ -131,12 +131,12 @@ const CONFIG = {
   preco:      150.00,                 // valor de 1 ingresso (último lote)
   maxQtd:     10,                     // máximo por pessoa
   totalIngressos: 10,                 // total à venda neste lote
-  contador:   "https://countapi.mileshilliard.com/api/v1/{acao}/sabia-encharcados-u7k2x9",
+  chaveContador: "sabia-encharcados-u7k2x9",  // contador online de reservas
   pixChave:   "69cc9df8-10cd-408c-9115-171aa9a375fb", // chave aleatória da Jéssica
   recebedor:  "JESSICA",              // nome do titular (até 25 letras)
   cidade:     "SOROCABA",             // cidade do titular (até 15 letras)
   whatsapp:   "5515997844648",        // WhatsApp da Jéssica: 55 + DDD + número
-  minutos:    10                      // contagem após copiar o Pix
+  minutos:    10                      // tempo de reserva para pagar
 };
 /* ===================================================== */
 
@@ -155,34 +155,57 @@ $("menos").onclick = () => { if(qtd>1){qtd--;atualizaTotal();} };
 $("mais").onclick  = () => { if(qtd<Math.min(CONFIG.maxQtd,restantes)){qtd++;atualizaTotal();} };
 atualizaTotal();
 
-/* ---------- Estoque (contador online de vendidos) ---------- */
+/* ---------- Estoque: a vaga é reservada ANTES de mostrar o Pix ---------- */
 let restantes = CONFIG.totalIngressos;
-const urlContador = acao => CONFIG.contador.replace("{acao}",acao);
-async function lerVendidos(){
-  try {
-    const r = await fetch(urlContador("get")+"?t="+Date.now(),{cache:"no-store"});
-    const j = await r.json();
-    return typeof j.value==="number" ? j.value : 0;   // chave nova = 0 vendidos
-  } catch(_) { return null; }                          // contador fora do ar: não trava a venda
+const API = "https://countapi.mileshilliard.com/api/v1";
+const K_RES = CONFIG.chaveContador + "-res";   // total já reservado (só sobe, atômico)
+const K_LIB = CONFIG.chaveContador + "-lib";   // total devolvido (reservas que expiraram)
+async function api(path){
+  const r = await fetch(API + path + (path.includes("?") ? "&" : "?") + "t=" + Date.now(), {cache:"no-store"});
+  const j = await r.json();
+  if(j.error === "Key not found") return 0;
+  if(typeof j.value !== "number") throw new Error("contador");
+  return j.value;
+}
+async function ocupados(){
+  const [r,l] = await Promise.all([api("/get/"+K_RES), api("/get/"+K_LIB)]);
+  return r - l;
+}
+function mostraEsgotado(){
+  ["s1","s2"].forEach(id => $(id).classList.add("hidden"));
+  $("esgotado").classList.remove("hidden");
+  $("tag").textContent = "Esgotado";
 }
 async function atualizaEstoque(){
-  const v = await lerVendidos();
-  if(v===null) return true;
-  restantes = Math.max(0, CONFIG.totalIngressos - v);
-  if(restantes===0){
-    ["s1","s2"].forEach(id=>$(id).classList.add("hidden"));
-    $("esgotado").classList.remove("hidden");
-    $("tag").textContent = "Esgotado";
-    return false;
-  }
-  $("tag").textContent = "Último lote · restam " + restantes + (restantes===1?" ingresso":" ingressos");
-  if(qtd>restantes){ qtd=restantes; atualizaTotal(); }
+  try { restantes = Math.max(0, CONFIG.totalIngressos - await ocupados()); }
+  catch(_) { return null; }
+  if(restantes === 0){ mostraEsgotado(); return false; }
+  $("tag").textContent = "Último lote · restam " + restantes + (restantes===1 ? " ingresso" : " ingressos");
+  if(qtd > restantes){ qtd = restantes; atualizaTotal(); }
   return true;
 }
-atualizaEstoque();
-async function registrarVenda(n){
-  for(let i=0;i<n;i++){ try{ await fetch(urlContador("hit"),{cache:"no-store"}); }catch(_){} }
+let reserva = null;   // {n, fim}
+let pago = false;
+const salva = () => { try { localStorage.setItem("sabia-reserva", JSON.stringify(reserva ? {...reserva, pago, nome:$("nome").value, tel:$("tel").value, email:$("email").value} : null)); } catch(_){} };
+async function reservar(n){
+  const r = await api("/hit/"+K_RES+"?amount="+n);     // incremento atômico: cada um recebe um número único
+  const l = await api("/get/"+K_LIB);
+  if(r - l > CONFIG.totalIngressos){                     // passou do limite → devolve na hora
+    try { await api("/hit/"+K_LIB+"?amount="+n); } catch(_){}
+    return false;
+  }
+  reserva = { n, fim: Date.now() + CONFIG.minutos*60000 };
+  salva();
+  return true;
 }
+function liberar(){
+  if(!reserva || pago) return;
+  const n = reserva.n; reserva = null; salva();
+  try { fetch(API+"/hit/"+K_LIB+"?amount="+n+"&t="+Date.now(), {keepalive:true, cache:"no-store"}); } catch(_){}
+}
+// Fechou a página antes de copiar o Pix → devolve a vaga
+let pixCopiado = false;
+window.addEventListener("pagehide", () => { if(!pixCopiado) liberar(); });
 
 /* Máscara (00) 00000-0000 / (00) 0000-0000 */
 $("tel").addEventListener("input", e => {
@@ -223,45 +246,94 @@ function pixPayload(valor){
   return p + crc16(p);
 }
 
-$("irPagar").onclick = async () => {
-  if(!valida()) return;
-  $("irPagar").disabled = true; $("irPagar").textContent = "Verificando ingressos…";
-  const pedido = qtd;
-  const ok = await atualizaEstoque();
-  $("irPagar").disabled = false; $("irPagar").textContent = "Ir para o pagamento";
-  if(!ok) return;
-  if(pedido>restantes){ alert("Só restam "+restantes+" ingresso(s). Ajustamos a quantidade."); return; }
+function irParaPix(){
   $("pixCode").textContent = pixPayload(CONFIG.preco*qtd);
   $("s1").classList.add("hidden"); $("s2").classList.remove("hidden");
+  iniciaTimer();
   window.scrollTo({top:0,behavior:"smooth"});
+}
+
+$("irPagar").onclick = async () => {
+  if(!valida()) return;
+  const btn = $("irPagar");
+  btn.disabled = true; btn.textContent = "Reservando seus ingressos…";
+  const fim = () => { btn.disabled = false; btn.textContent = "Ir para o pagamento"; };
+  const pedido = qtd;
+  const ok = await atualizaEstoque();
+  if(ok === null){ fim(); alert("Não conseguimos verificar os ingressos agora. Tente de novo em alguns segundos."); return; }
+  if(!ok){ fim(); return; }
+  if(pedido > restantes){ fim(); alert("Só restam "+restantes+" ingresso(s). Ajustamos a quantidade."); return; }
+  let reservou;
+  try { reservou = await reservar(qtd); }
+  catch(_) { fim(); alert("Não conseguimos reservar agora. Tente de novo em alguns segundos."); return; }
+  fim();
+  if(!reservou){
+    await atualizaEstoque();
+    if(restantes > 0) alert("Alguém acabou de reservar. Só restam "+restantes+" ingresso(s) — ajuste a quantidade.");
+    return;
+  }
+  irParaPix();
 };
-$("voltar").onclick = () => { $("s2").classList.add("hidden"); $("s1").classList.remove("hidden"); };
+$("voltar").onclick = () => {
+  liberar(); clearInterval(timerId); timerId = null;
+  $("timer").classList.add("hidden"); $("copiado").textContent = ""; $("copiar").textContent = "Copiar código Pix";
+  $("jaPaguei").disabled = true; pixCopiado = false;
+  $("s2").classList.add("hidden"); $("s1").classList.remove("hidden");
+  atualizaEstoque();
+};
 
 $("copiar").onclick = async () => {
   const code = $("pixCode").textContent;
   try { await navigator.clipboard.writeText(code); }
   catch(_) { const t=document.createElement("textarea"); t.value=code; document.body.appendChild(t); t.select(); document.execCommand("copy"); t.remove(); }
+  pixCopiado = true;
   $("copiado").textContent = "✓ Código copiado! Agora cole no app do banco.";
   $("copiar").textContent = "Copiar de novo";
   $("jaPaguei").disabled = false;
-  if(!timerId) iniciaTimer();
 };
 
 function iniciaTimer(){
-  $("timer").classList.remove("hidden");
-  const fim = Date.now() + CONFIG.minutos*60000;
+  $("timer").classList.remove("hidden"); $("timer").classList.remove("over");
+  $("timerMsg").textContent = "Seus ingressos ficam reservados nesse tempo";
+  clearInterval(timerId);
   const tick = () => {
-    const s = Math.max(0, Math.round((fim-Date.now())/1000));
+    if(!reserva) return;
+    const s = Math.max(0, Math.round((reserva.fim-Date.now())/1000));
     $("tempo").textContent = String(Math.floor(s/60)).padStart(2,"0")+":"+String(s%60).padStart(2,"0");
-    if(s===0){ clearInterval(timerId); $("timer").classList.add("over"); $("timerMsg").textContent = "Tempo esgotado — se já pagou, envie o comprovante mesmo assim."; }
+    if(s===0 && !pago){
+      clearInterval(timerId); timerId = null;
+      liberar();
+      $("timer").classList.add("over");
+      $("timerMsg").textContent = "Tempo esgotado — a reserva foi liberada.";
+      $("pixCode").textContent = "Reserva expirada. Volte e faça uma nova reserva.";
+      $("copiar").disabled = true;
+      $("jaPaguei").textContent = "Já paguei antes do tempo acabar → enviar comprovante";
+      $("jaPaguei").disabled = false;
+    }
   };
   tick(); timerId = setInterval(tick,1000);
 }
 
-let vendaRegistrada = false;
-$("jaPaguei").onclick = async () => {
-  if(!vendaRegistrada){ vendaRegistrada = true; $("jaPaguei").disabled = true; await registrarVenda(qtd); }
-  $("s2").classList.add("hidden"); $("s3").classList.remove("hidden"); window.scrollTo({top:0,behavior:"smooth"}); };
+$("jaPaguei").onclick = () => {
+  pago = true; salva(); clearInterval(timerId);
+  $("s2").classList.add("hidden"); $("s3").classList.remove("hidden");
+  window.scrollTo({top:0,behavior:"smooth"});
+};
+
+/* Voltou do app do banco e a página recarregou? Restaura a reserva. */
+(async () => {
+  let r = null;
+  try { r = JSON.parse(localStorage.getItem("sabia-reserva")); } catch(_){}
+  if(r && r.n){
+    $("nome").value = r.nome||""; $("tel").value = r.tel||""; $("email").value = r.email||"";
+    qtd = r.n; atualizaTotal();
+    reserva = {n:r.n, fim:r.fim}; pago = !!r.pago; pixCopiado = true;
+    if(pago){ $("s1").classList.add("hidden"); $("s3").classList.remove("hidden"); await atualizaEstoque(); $("s3").classList.remove("hidden"); return; }
+    if(r.fim > Date.now()){ await atualizaEstoque(); $("esgotado").classList.add("hidden"); $("jaPaguei").disabled = false; irParaPix(); return; }
+    liberar();
+  }
+  atualizaEstoque();
+})();
 
 $("whats").onclick = () => {
   const msg =
@@ -275,6 +347,7 @@ $("whats").onclick = () => {
 *Valor pago:* ${brl(CONFIG.preco*qtd)}
 
 Segue o comprovante 👇`;
+  salva();
   window.location.href = "https://wa.me/"+CONFIG.whatsapp+"?text="+encodeURIComponent(msg);
 };
 </script>
